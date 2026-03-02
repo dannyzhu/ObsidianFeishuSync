@@ -21,6 +21,7 @@ Manual two-way sync between Obsidian Markdown files and Feishu Docs (Docx/Wiki),
   - Wiki Space + hierarchical document tree selection
   - Local title search/filter
 - Markdown handling for headings, lists, code blocks, quotes, tables, tasks, etc.
+  - Text link rule: only `http://`, `https://`, and `ftp://` are uploaded as clickable links; local/relative file paths are kept as plain text
 - Mermaid upload modes:
   - Text block
   - Image

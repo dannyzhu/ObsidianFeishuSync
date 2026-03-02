@@ -1080,6 +1080,7 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
   const imageRefByBlockId = /* @__PURE__ */ new Map();
   const fileRefByBlockId = /* @__PURE__ */ new Map();
   const listParents = [];
+  const orderedSequences = [];
   let idSeq = 0;
   let i = 0;
   const addChild = (parentId, childId) => {
@@ -1114,13 +1115,58 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
   const paragraphBuffer = [];
   const resetListParents = (level = 0) => {
     listParents.splice(level);
+    orderedSequences.splice(level);
+  };
+  const getListLevel = (indentRaw) => {
+    const indentLength = indentRaw.replace(/\t/g, "    ").length;
+    if (indentLength < 3) {
+      return 0;
+    }
+    return Math.ceil(indentLength / 4);
+  };
+  const parseListLineMeta = (lineValue) => {
+    const todo = lineValue.match(/^(\s*)-\s+\[( |x|X)\]\s+(.*)$/);
+    if (todo) {
+      return { kind: "todo", level: getListLevel(todo[1]) };
+    }
+    const ordered = lineValue.match(/^(\s*)(\d+)\.\s+(.*)$/);
+    if (ordered) {
+      return { kind: "ordered", level: getListLevel(ordered[1]) };
+    }
+    const bullet = lineValue.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (bullet) {
+      return { kind: "bullet", level: getListLevel(bullet[1]) };
+    }
+    return null;
+  };
+  const shouldPreserveOrderedContextOnSingleBlankLine = (lineIndex) => {
+    const nextLine = lines[lineIndex + 1] ?? "";
+    if (!nextLine.trim()) {
+      return false;
+    }
+    const nextMeta = parseListLineMeta(nextLine);
+    if (!nextMeta) {
+      return false;
+    }
+    if (nextMeta.kind !== "ordered" || nextMeta.level !== 0) {
+      return false;
+    }
+    const activeTopLevelParent = listParents[0];
+    const activeTopLevelSequence = orderedSequences[0] ?? 0;
+    if (!activeTopLevelParent || activeTopLevelSequence <= 0) {
+      return false;
+    }
+    const topLevelBlock = blockMap.get(activeTopLevelParent);
+    return Number(topLevelBlock?.block_type ?? 0) === 13;
   };
   while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed) {
       flushParagraph(paragraphBuffer.splice(0));
-      resetListParents();
+      if (!shouldPreserveOrderedContextOnSingleBlankLine(i)) {
+        resetListParents();
+      }
       i += 1;
       continue;
     }
@@ -1201,7 +1247,7 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
     const todo = line.match(/^(\s*)-\s+\[( |x|X)\]\s+(.*)$/);
     if (todo) {
       flushParagraph(paragraphBuffer.splice(0));
-      const level = Math.floor(todo[1].replace(/\t/g, "    ").length / 4);
+      const level = getListLevel(todo[1]);
       const parent = level > 0 ? listParents[level - 1] : void 0;
       const id = addBlock(
         {
@@ -1214,6 +1260,7 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
         parent
       );
       listParents[level] = id;
+      orderedSequences[level] = 0;
       resetListParents(level + 1);
       i += 1;
       continue;
@@ -1221,19 +1268,21 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
     const ordered = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
     if (ordered) {
       flushParagraph(paragraphBuffer.splice(0));
-      const level = Math.floor(ordered[1].replace(/\t/g, "    ").length / 4);
+      const level = getListLevel(ordered[1]);
       const parent = level > 0 ? listParents[level - 1] : void 0;
+      const sequence = (orderedSequences[level] ?? 0) + 1;
       const id = addBlock(
         {
           block_type: 13,
           ordered: {
             elements: parseInlineElements(ordered[3]),
-            style: { align: 1, folded: false, sequence: ordered[2] }
+            style: { align: 1, folded: false, sequence: String(sequence) }
           }
         },
         parent
       );
       listParents[level] = id;
+      orderedSequences[level] = sequence;
       resetListParents(level + 1);
       i += 1;
       continue;
@@ -1241,7 +1290,7 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
     const bullet = line.match(/^(\s*)[-*+]\s+(.*)$/);
     if (bullet) {
       flushParagraph(paragraphBuffer.splice(0));
-      const level = Math.floor(bullet[1].replace(/\t/g, "    ").length / 4);
+      const level = getListLevel(bullet[1]);
       const parent = level > 0 ? listParents[level - 1] : void 0;
       const id = addBlock(
         {
@@ -1254,6 +1303,7 @@ function parseMarkdownToBlockGraph(markdown, options = {}) {
         parent
       );
       listParents[level] = id;
+      orderedSequences[level] = 0;
       resetListParents(level + 1);
       i += 1;
       continue;
@@ -1410,7 +1460,10 @@ function parseInlineElements(input) {
     const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (link) {
       content = link[1];
-      style.link = { url: encodeURIComponent(link[2]) };
+      const linkTarget = link[2].trim();
+      if (/^(https?|ftp):\/\/.+/i.test(linkTarget)) {
+        style.link = { url: encodeURIComponent(linkTarget) };
+      }
     } else if (token.startsWith("***") && token.endsWith("***")) {
       content = token.slice(3, -3);
       style.bold = true;
@@ -1799,7 +1852,7 @@ function normalizeMisclassifiedListCodeBlock(block, parentBlock) {
       block_type: 13,
       ordered: {
         elements: [{ text_run: { content: orderedMatch[2], text_element_style: {} } }],
-        style: { align: 1, folded: false, sequence: orderedMatch[1] }
+        style: { align: 1, folded: false, sequence: normalizeOrderedSequence(orderedMatch[1]) }
       }
     };
   }
@@ -1831,6 +1884,13 @@ function extractFirstTextRun(elements) {
   }
   return "";
 }
+function normalizeOrderedSequence(value) {
+  const num = Number.parseInt(value, 10);
+  if (Number.isFinite(num) && num > 0) {
+    return String(num);
+  }
+  return "1";
+}
 function normalizeMarkdownForFeishuConvert(markdown) {
   if (!markdown.includes("\n")) {
     return markdown;
@@ -1849,19 +1909,13 @@ function normalizeMarkdownForFeishuConvert(markdown) {
       out.push(line);
       continue;
     }
-    const tabExpanded = line.replace(/^\t+/, (m2) => "    ".repeat(m2.length));
+    const tabExpanded = line.replace(/^([ \t]+)/, (m2) => m2.replace(/\t/g, "    "));
     const m = tabExpanded.match(/^(\s+)([-*+]|\d+\.)\s+/);
     if (!m) {
       out.push(tabExpanded);
       continue;
     }
-    const indent = m[1].length;
-    if (indent === 0 || indent % 4 === 0) {
-      out.push(tabExpanded);
-      continue;
-    }
-    const normalizedIndent = indent < 4 ? 4 : Math.floor(indent / 4) * 4;
-    out.push(`${" ".repeat(normalizedIndent)}${tabExpanded.slice(indent)}`);
+    out.push(tabExpanded);
   }
   return out.join("\n");
 }
@@ -2592,7 +2646,7 @@ var _FeishuDocUploadService = class _FeishuDocUploadService {
     this.reportProgress(onProgress, 100, "\u4E0A\u4F20\u5B8C\u6210", "\u6587\u6863\u4E0A\u4F20\u5DF2\u5B8C\u6210\u3002");
     return { updatedAt: Date.now() };
   }
-  async appendChildren(token, docToken, parentBlockId, children, onBatch) {
+  async appendChildren(token, docToken, parentBlockId, children, onBatch, onProgress, progressStage = "\u5199\u5165\u6587\u6863\u5757", progressContext) {
     if (children.length === 0) {
       return [];
     }
@@ -2635,7 +2689,7 @@ var _FeishuDocUploadService = class _FeishuDocUploadService {
           // Keep insertion order stable across sequential batches.
           index: -1
         })
-      });
+      }, onProgress, progressStage, progressContext);
       const created = (response.data?.children ?? []).map((item) => ({
         blockId: item.block_id ?? "",
         sheetToken: item.sheet?.token,
@@ -2702,7 +2756,16 @@ var _FeishuDocUploadService = class _FeishuDocUploadService {
       if (payload.length === 0) {
         return;
       }
-      const created = await this.appendChildren(token, docToken, parentBlockId, payload);
+      const created = await this.appendChildren(
+        token,
+        docToken,
+        parentBlockId,
+        payload,
+        void 0,
+        onProgress,
+        "\u5199\u5165\u6587\u6863\u5757",
+        `\u6B63\u5728\u5904\u7406\u5757 ${Math.min(processedBlocks + normalizedIds.length, totalBlocks)}/${totalBlocks}`
+      );
       for (let i = 0; i < normalizedIds.length; i += 1) {
         const oldId = normalizedIds[i];
         visited.add(oldId);
