@@ -1684,7 +1684,7 @@ function isTableSeparatorLine(line) {
   if (cells.length === 0) {
     return false;
   }
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  return cells.every((cell) => /^:?-{1,}:?$/.test(cell.trim()));
 }
 function splitMarkdownTableLine(line) {
   const trimmed = line.trim();
